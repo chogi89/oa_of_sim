@@ -1,5 +1,5 @@
 #include "ros/ros.h"
-#include "oa_of/MsgOAOF.h"
+#include "oa_of_sim/MsgOAOF.h"
 
 #include <cv_bridge/cv_bridge.h>
 #include <image_transport/image_transport.h>
@@ -40,23 +40,23 @@
 
 #define D_SET       0.1
 
-#define INIT_P_X    0
+#define INIT_P_X    0.4252
 #define INIT_P_Y    0
-#define INIT_P_Z    1.5
+#define INIT_P_Z    0.9865
 
 #define RL_P_GAIN   0.01
 #define RL_D_GAIN   0.01
 #define UD_P_GAIN   0.01
 #define UD_D_GAIN   0.01
 #define EPS_P_GAIN  1000
-#define ETA_P_GAIN  1.7
+#define ETA_P_GAIN  0.8
 #define ETA_D_GAIN  0
 #define ALT_P_GAIN  3
 #define ALT_D_GAIN  0
 #define ALT_SAT     0.07
 
-#define SIGMA_C_ETA 3
-#define SIGMA_C_RL  3
+#define SIGMA_C_ETA 2.5
+#define SIGMA_C_RL  2.5
 
 #define SIGMA_M_ETA 20
 #define SIGMA_M_RL  20
@@ -185,7 +185,7 @@ int main (int argc, char **argv){
     ros::init(argc, argv, "oa_of_sim");
     ros::NodeHandle nh, nh_mavros, nh_image;
 
-    ros::Publisher oa_of_pub = nh.advertise<oa_of::MsgOAOF>("oa_of_msg",100);
+    ros::Publisher oa_of_pub = nh.advertise<oa_of_sim::MsgOAOF>("oa_of_msg",100);
 
     ros::Publisher Set_Position_pub = nh_mavros.advertise<geometry_msgs::PoseStamped>("firefly/command/pose",100);
     ros::Subscriber oa_of_sub_pos = nh_mavros.subscribe("firefly/odometry_sensor1/pose", 10, msgCallback);
@@ -345,8 +345,6 @@ int main (int argc, char **argv){
         mat_array = Mat(O_HEIGHT, O_WIDTH, CV_8UC1, &Img_data);
 
 		resize(mat_array, mat_array, Size(WIDTH, HEIGHT));
-        //resize(mat_arrow_h,mat_arrow_h,Size(WIDTH_H*100, HEIGHT_H*100));
-        //resize(mat_arrow_v,mat_arrow_v,Size(WIDTH_V*100, HEIGHT_V*100));
 
         // ------------------------- //
 		// -- Save Previous Image -- //
@@ -451,12 +449,12 @@ int main (int argc, char **argv){
 
         for (int i=0; i<((WIDTH_H/2)-2); i++){
             for(int j=0; j<(HEIGHT_H-2); j++){
-                OFleft = OFleft + sqrt((u_h[i][j]*u_h[i][j]) + (v_h[i][j]*v_h[i][j]));
+                OFleft = OFleft + sqrt(u_h[i][j]*u_h[i][j]);
             }
         }
         for (int i=((WIDTH_H/2)); i<(WIDTH_H-2); i++){
             for(int j=0; j<(HEIGHT_H-2); j++){
-                OFright = OFright + sqrt((u_h[i][j]*u_h[i][j]) + (v_h[i][j]*v_h[i][j]));
+                OFright = OFright + sqrt(u_h[i][j]*u_h[i][j]);
             }
         }
 
@@ -469,10 +467,10 @@ int main (int argc, char **argv){
 
         for(int i=0; i<(WIDTH_V-2); i++){
             for(int j=0; j<((HEIGHT_V/2)-2); j++){
-                OFup = OFup + sqrt((u_v[i][j]*u_v[i][j]) + (v_v[i][j]*v_v[i][j]));
+                OFup = OFup + sqrt(v_v[i][j]*v_v[i][j]);
             }
             for(int j=(HEIGHT_V/2); j<(HEIGHT_V-2); j++){
-                OFdown = OFdown + sqrt((u_v[i][j]*u_v[i][j]) + (v_v[i][j]*v_v[i][j]));
+                OFdown = OFdown + sqrt(v_v[i][j]*v_v[i][j]);
             }
         }
 
@@ -535,8 +533,7 @@ int main (int argc, char **argv){
 
             pose_o_ex_t = 0;
             pose_o_ey_t = 0;
-            //pose_o_ez_t = pose_o_ez_c;
-            pose_o_ez_t = pose_o_ez_c + (sigmoid_eta * eta_h_ctrl_signed_input) + (sigmoid_rl * of_rl_ctrl_input);
+            pose_o_ez_t = 0;//pose_o_ez_c + (sigmoid_eta * eta_h_ctrl_signed_input) + (sigmoid_rl * of_rl_ctrl_input);
             pose_p_x_t = pose_p_x_c + D_SET*cos(pose_o_ez_t);
             pose_p_y_t = pose_p_y_c + D_SET*sin(pose_o_ez_t);
             pose_p_z_t = pose_p_z_c + of_ud_ctrl_input + alt_ctrl_sat_input;
@@ -587,21 +584,13 @@ int main (int argc, char **argv){
                 arrowedLine(mat_arrow_v,p1_v[i][j],p2_v[i][j],0,3,CV_AA,0,1);
 		    }
 		}
-/*
-        mat_array.copyTo(mat_total(Rect(0, 0, WIDTH, HEIGHT)));
-        resize(mat_arrow_h,mat_arrow_h,Size(WIDTH_H, HEIGHT_H));
-        resize(mat_arrow_v,mat_arrow_v,Size(WIDTH_V, HEIGHT_V));
-        mat_arrow_h.copyTo(mat_total(Rect(0, HEIGHT, WIDTH_H, HEIGHT_H)));
-        mat_arrow_v.copyTo(mat_total(Rect(WIDTH, 0, WIDTH_V, HEIGHT_V)));
-*/
+
 		namedWindow("Img_Array",WINDOW_NORMAL);
 		imshow("Img_Array",mat_array);
 		namedWindow("Optical_flow_h",WINDOW_NORMAL);
 		imshow("Optical_flow_h",mat_arrow_h);
 		namedWindow("Optical_flow_v",WINDOW_NORMAL);
 		imshow("Optical_flow_v",mat_arrow_v);
-        //namedWindow("Img_Total",WINDOW_NORMAL);
-        //imshow("Img_Total",mat_total);
 
 		// --------------- //
         // -- Data Save -- //
@@ -653,7 +642,7 @@ int main (int argc, char **argv){
 		if(keypressed == 27)
 			break;
 
-        oa_of::MsgOAOF msg;
+        oa_of_sim::MsgOAOF msg;
         geometry_msgs::PoseStamped msg_setposition;
 
 		msg.data = count;

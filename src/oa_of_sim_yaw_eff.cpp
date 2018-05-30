@@ -4,7 +4,9 @@
 #include <cv_bridge/cv_bridge.h>
 #include <image_transport/image_transport.h>
 #include <geometry_msgs/PoseStamped.h>
+#include <nav_msgs/Odometry.h>
 #include <sensor_msgs/Image.h>
+
 #include <opencv2/video/tracking.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 #include <opencv2/highgui/highgui.hpp>
@@ -41,7 +43,7 @@
 #define D_SET       0.1
 
 #define INIT_P_X    0
-#define INIT_P_Y    4.5
+#define INIT_P_Y    0
 #define INIT_P_Z    1.5
 
 #define RL_P_GAIN   0.01
@@ -49,7 +51,7 @@
 #define UD_P_GAIN   0.01
 #define UD_D_GAIN   0.01
 #define EPS_P_GAIN  1000
-#define ETA_P_GAIN  1.6
+#define ETA_P_GAIN  0.8
 #define ETA_D_GAIN  0
 #define ALT_P_GAIN  3
 #define ALT_D_GAIN  0
@@ -107,6 +109,13 @@ double pose_o_qw_t = 1;
 double pose_o_ex_t = 0;
 double pose_o_ey_t = 0;
 double pose_o_ez_t = 0;
+
+double odom_lx = 0;
+double odom_ly = 0;
+double odom_lz = 0;
+double odom_ax = 0;
+double odom_ay = 0;
+double odom_az = 0;
 
 // ----------------------- //
 // -- General Functions -- //
@@ -166,9 +175,28 @@ void msgCallback(const geometry_msgs::Pose::ConstPtr& Pose){
     pose_o_qz_c = Pose->orientation.z;
     pose_o_qw_c = Pose->orientation.w;
 
+    double sinr_cosp = +2.0 * (pose_o_qw_c * pose_o_qx_c + pose_o_qy_c * pose_o_qz_c);
+	double cosr_cosp = +1.0 - 2.0 * (pose_o_qx_c * pose_o_qx_c + pose_o_qy_c * pose_o_qy_c);
+	pose_o_ex_c = atan2(sinr_cosp, cosr_cosp);
+
+    double sinp = +2.0 * (pose_o_qw_c * pose_o_qy_c - pose_o_qz_c * pose_o_qx_c);
+	if (fabs(sinp) >= 1)
+		pose_o_ey_c = copysign(PI / 2, sinp); // use 90 degrees if out of range
+	else
+		pose_o_ey_c = asin(sinp);
+
     double siny = +2.0 * (pose_o_qw_c * pose_o_qz_c + pose_o_qx_c * pose_o_qy_c);
     double cosy = +1.0 - 2.0 * (pose_o_qy_c * pose_o_qy_c + pose_o_qz_c * pose_o_qz_c);
     pose_o_ez_c = atan2(siny, cosy);
+}
+
+void msgCallback_odom(const nav_msgs::Odometry::ConstPtr& odom){
+    odom_lx = odom->twist.twist.linear.x;
+    odom_ly = odom->twist.twist.linear.y;
+    odom_lz = odom->twist.twist.linear.z;
+    odom_ax = odom->twist.twist.angular.x;
+    odom_ay = odom->twist.twist.angular.y;
+    odom_az = odom->twist.twist.angular.z;
 }
 
 void msgCallback_img(const sensor_msgs::Image::ConstPtr& Img){
@@ -189,17 +217,21 @@ int main (int argc, char **argv){
 
     ros::Publisher Set_Position_pub = nh_mavros.advertise<geometry_msgs::PoseStamped>("firefly/command/pose",100);
     ros::Subscriber oa_of_sub_pos = nh_mavros.subscribe("firefly/odometry_sensor1/pose", 10, msgCallback);
+    ros::Subscriber oa_of_sub_odom = nh_mavros.subscribe("firefly/odometry_sensor1/odometry", 10, msgCallback_odom);
     ros::Subscriber oa_of_sub_image = nh_image.subscribe("firefly/camera_nadir/image_raw", 10, msgCallback_img);
 
     ros::Rate loop_rate(1/S_TIME);
 
     ofstream file_pose_data("pose_data.txt");
+    ofstream file_vel_data("vel_data.txt");
     ofstream file_of_h_data("of_h_data.txt");
     ofstream file_of_v_data("of_v_data.txt");
     ofstream file_eta_h_data("eta_h_data.txt");
     ofstream file_image_data("image_data.txt");
+    ofstream file_control_data("control_data.txt");
 
     Mat mat_arrow_h(Size(WIDTH_H*100, HEIGHT_H*100),CV_8UC1,255);
+    Mat mat_arrow_h_comp(Size(WIDTH_H*100, HEIGHT_H*100),CV_8UC1,255);
     Mat mat_arrow_v(Size(WIDTH_V*100, HEIGHT_V*100),CV_8UC1,255);
     Mat mat_array;
     Mat mat_total(Size((WIDTH + WIDTH_V), (HEIGHT + HEIGHT_H)),CV_8UC1,225);
@@ -222,11 +254,17 @@ int main (int argc, char **argv){
     double u_h[WIDTH_H][HEIGHT_H];
     double v_h[WIDTH_H][HEIGHT_H];
 
+    double u_h_comp[WIDTH_H][HEIGHT_H];
+    double v_h_comp[WIDTH_H][HEIGHT_H];
+
     double mu_u_h[WIDTH_H-2][HEIGHT_H-2];
     double mu_v_h[WIDTH_H-2][HEIGHT_H-2];
 
     CvPoint p1_h[WIDTH_H][HEIGHT_H];
     CvPoint p2_h[WIDTH_H][HEIGHT_H];
+
+    CvPoint p1_h_comp[WIDTH_H][HEIGHT_H];
+    CvPoint p2_h_comp[WIDTH_H][HEIGHT_H];
 
     double r_x_h[WIDTH_H][HEIGHT_H];
     double r_y_h[WIDTH_H][HEIGHT_H];
@@ -245,6 +283,9 @@ int main (int argc, char **argv){
     double u_v[WIDTH_V][HEIGHT_V];
     double v_v[WIDTH_V][HEIGHT_V];
 
+    double u_v_comp[WIDTH_V][HEIGHT_V];
+    double v_v_comp[WIDTH_V][HEIGHT_V];
+
     double mu_u_v[WIDTH_V-1][HEIGHT_V-1];
     double mu_v_v[WIDTH_V-1][HEIGHT_V-1];
 
@@ -255,6 +296,8 @@ int main (int argc, char **argv){
     double OFleft = 0;
     double OFup = 0;
     double OFdown = 0;
+    double OFright_comp = 0;
+    double OFleft_comp = 0;
 
     double of_rl_e = 0;
     double of_rl_e_f = 0;
@@ -269,6 +312,7 @@ int main (int argc, char **argv){
     double eta_h_sum_f = 0;
     double eta_h_sum_f_p = 0;
     double eta_h_e = 0;
+    double eta_h_e_f = 0;
     double eta_h_ctrl_input = 0;
     double eta_h_ctrl_signed_input = 0;
 
@@ -289,6 +333,9 @@ int main (int argc, char **argv){
     double sigmoid_eta = 0;
     double sigmoid_rl = 0;
 
+    double c_in_oz1 = 0;
+    double c_in_oz2 = 0;
+
     double cy = 0;
     double sy = 0;
     double cr = 0;
@@ -302,6 +349,12 @@ int main (int argc, char **argv){
         }
     }
 
+    for(int i=0; i<(WIDTH_H-1); i++){
+        for(int j=0; j<(HEIGHT_H-1); j++){
+            p1_h_comp[i][j] = cvPoint(i,j);
+        }
+    }
+
     for(int i=0; i<(WIDTH_V-1); i++){
         for(int j=0; j<(HEIGHT_V-1); j++){
             p1_v[i][j] = cvPoint(i,j);
@@ -312,6 +365,13 @@ int main (int argc, char **argv){
         for(int j=0; j<(HEIGHT_H-1); j++){
             p1_h[i][j].x = (p1_h[i][j].x*100)+100;
             p1_h[i][j].y = (p1_h[i][j].y*100)+100;
+        }
+    }
+
+    for(int i=0; i<(WIDTH_H-1); i++){
+        for(int j=0; j<(HEIGHT_H-1); j++){
+            p1_h_comp[i][j].x = (p1_h_comp[i][j].x*100)+100;
+            p1_h_comp[i][j].y = (p1_h_comp[i][j].y*100)+100;
         }
     }
 
@@ -341,12 +401,11 @@ int main (int argc, char **argv){
     double count = 0;
 	while (ros::ok()){
         mat_arrow_h.setTo(255);
+        mat_arrow_h_comp.setTo(255);
         mat_arrow_v.setTo(255);
         mat_array = Mat(O_HEIGHT, O_WIDTH, CV_8UC1, &Img_data);
 
 		resize(mat_array, mat_array, Size(WIDTH, HEIGHT));
-        //resize(mat_arrow_h,mat_arrow_h,Size(WIDTH_H*100, HEIGHT_H*100));
-        //resize(mat_arrow_v,mat_arrow_v,Size(WIDTH_V*100, HEIGHT_V*100));
 
         // ------------------------- //
 		// -- Save Previous Image -- //
@@ -442,6 +501,17 @@ int main (int argc, char **argv){
 		    }
 		}
 
+        // ------------------------------------------ //
+		// -- Horizental Optical Flow Compensation -- //
+        // ------------------------------------------ //
+
+        for(int i=0; i<(WIDTH_H-2); i++){
+		    for(int j=0; j<(HEIGHT_H-2); j++){
+                u_h_comp[i+1][j+1] = u_h[i+1][j+1] - odom_az*( 1+pow(r_x_h[i][j]/20,2) ); //u_h[i+1][j+1] - 0.1 * odom_az*(1+pow((j-HEIGHT_H/2-1),2));
+                v_h_comp[i+1][j+1] = 0;//-0.1 * odom_az*((i-WIDTH_H/2-1)*(j-HEIGHT_H/2-1)); //v_h[i+1][j+1] - 0.1 * odom_az*((i-WIDTH_H/2-1)*(j-HEIGHT_H/2-1));
+		    }
+		}
+
         // ---------------------------------------------------- //
         // -- Horizental Optical Flow Difference Calculation -- //
         // ---------------------------------------------------- //
@@ -457,6 +527,24 @@ int main (int argc, char **argv){
         for (int i=((WIDTH_H/2)); i<(WIDTH_H-2); i++){
             for(int j=0; j<(HEIGHT_H-2); j++){
                 OFright = OFright + sqrt(u_h[i][j]*u_h[i][j]);
+            }
+        }
+
+        // ---------------------------------------------------------------- //
+        // -- Compensated Horizental Optical Flow Difference Calculation -- //
+        // ---------------------------------------------------------------- //
+
+        OFright_comp = 0;
+        OFleft_comp = 0;
+
+        for (int i=0; i<((WIDTH_H/2)-2); i++){
+            for(int j=0; j<(HEIGHT_H-2); j++){
+                OFleft_comp = OFleft_comp + sqrt(u_h_comp[i][j]*u_h_comp[i][j]);
+            }
+        }
+        for (int i=((WIDTH_H/2)); i<(WIDTH_H-2); i++){
+            for(int j=0; j<(HEIGHT_H-2); j++){
+                OFright_comp = OFright_comp + sqrt(u_h_comp[i][j]*u_h_comp[i][j]);
             }
         }
 
@@ -506,13 +594,17 @@ int main (int argc, char **argv){
 
             of_rl_e = OFright - OFleft;
             of_rl_e_f = LPF(of_rl_e_f, of_rl_e, CO_FRQ_RL);
-            of_rl_ctrl_input = PD_controller(of_rl_e_f, of_rl_e_f_p, RL_P_GAIN, RL_D_GAIN)*S_TIME;
+            of_rl_ctrl_input = PD_controller(of_rl_e_f, of_rl_e_f_p, 0.01, 0.01)*S_TIME;
 
+            eta_h_r_f = LPF(eta_h_r_f, eta_h_r, CO_FRQ_ETA);
+            eta_h_l_f = LPF(eta_h_l_f, eta_h_l, CO_FRQ_ETA);
             eta_h_sum = eta_h_r + eta_h_l;
-            eta_h_sum_f = LPF(eta_h_sum_f, eta_h_sum, CO_FRQ_ETA);
-            eta_h_ctrl_input = PD_controller(eta_h_sum_f, eta_h_sum_f_p, ETA_P_GAIN, ETA_D_GAIN)*S_TIME;
-            eta_h_e = eta_h_r - eta_h_l;
-            eta_h_ctrl_signed_input = Sign(eta_h_e) * eta_h_ctrl_input;
+            eta_h_sum_f = eta_h_r_f + eta_h_l_f;
+            //eta_h_sum_f = LPF(eta_h_sum_f, eta_h_sum, CO_FRQ_ETA);
+            eta_h_ctrl_input = PD_controller(eta_h_sum_f, eta_h_sum_f_p, 0.8, ETA_D_GAIN)*S_TIME;
+            //eta_h_e = eta_h_r - eta_h_l;
+            eta_h_e_f = eta_h_r_f - eta_h_l_f;
+            eta_h_ctrl_signed_input = Sign(eta_h_e_f) * eta_h_ctrl_input;
 
             of_ud_e = OFdown - OFup;
             of_ud_eps = of_ud_e/(1+EPS_P_GAIN*abs(pose_p_z_c - pose_p_z_p));
@@ -533,13 +625,24 @@ int main (int argc, char **argv){
             // -- Target Pose Generation -- //
             // ---------------------------- //
 
+            c_in_oz1 = (sigmoid_eta * eta_h_ctrl_signed_input) + (sigmoid_rl * of_rl_ctrl_input);
+            c_in_oz2 = sigmoid_eta * -30 *odom_az*S_TIME;
+/*
             pose_o_ex_t = 0;
             pose_o_ey_t = 0;
-            //pose_o_ez_t = pose_o_ez_c;
-            pose_o_ez_t = pose_o_ez_c + (sigmoid_eta * eta_h_ctrl_signed_input) + (sigmoid_rl * of_rl_ctrl_input);
+            //pose_o_ez_t = pose_o_ez_c + (sigmoid_eta * (eta_h_ctrl_signed_input-30*odom_az*S_TIME)) + (sigmoid_rl * of_rl_ctrl_input);
+            //pose_o_ez_t = pose_o_ez_c + (sigmoid_eta * eta_h_ctrl_signed_input) + (sigmoid_rl * of_rl_ctrl_input);
+            pose_o_ez_t = pose_o_ez_c + c_in_oz1 + c_in_oz2;
             pose_p_x_t = pose_p_x_c + D_SET*cos(pose_o_ez_t);
             pose_p_y_t = pose_p_y_c + D_SET*sin(pose_o_ez_t);
             pose_p_z_t = pose_p_z_c + of_ud_ctrl_input + alt_ctrl_sat_input;
+*/
+            pose_o_ex_t = 0;
+            pose_o_ey_t = 0;
+            pose_o_ez_t = pose_o_ez_c + 0.00;//pose_o_ez_c + (sigmoid_eta * eta_h_ctrl_signed_input) + (sigmoid_rl * of_rl_ctrl_input);
+            pose_p_x_t = pose_p_x_c + D_SET*cos(pose_o_ez_t);
+            pose_p_y_t = pose_p_y_c + D_SET*sin(pose_o_ez_t);
+            pose_p_z_t = 1.5;//pose_p_z_c;// + of_ud_ctrl_input + alt_ctrl_sat_input;
 
             // ------------------------- //
             // -- Euler to Quaternion -- //
@@ -569,6 +672,13 @@ int main (int argc, char **argv){
             }
         }
 
+        for(int i=0; i<(WIDTH_H-1); i++){
+            for(int j=0; j<(HEIGHT_H-1); j++){
+                p2_h_comp[i][j].x = p1_h_comp[i][j].x+(int)(u_h_comp[i][j]*20);
+                p2_h_comp[i][j].y = p1_h_comp[i][j].y+(int)(v_h_comp[i][j]*20);
+            }
+        }
+
 		for(int i=0; i<(WIDTH_V-1); i++){
 		    for(int j=0; j<(HEIGHT_V-1); j++){
                 p2_v[i][j].x = p1_v[i][j].x+(int)(u_v[i][j]*20);
@@ -582,34 +692,40 @@ int main (int argc, char **argv){
             }
         }
 
+        for(int i=0; i<(WIDTH_H-1); i++){
+            for(int j=0; j<(HEIGHT_H-1); j++){
+                arrowedLine(mat_arrow_h_comp,p1_h_comp[i][j],p2_h_comp[i][j],0,3,CV_AA,0,1);
+            }
+        }
+
 		for(int i=0; i<(WIDTH_V-1); i++){
 		    for(int j=0; j<(HEIGHT_V-1); j++){
                 arrowedLine(mat_arrow_v,p1_v[i][j],p2_v[i][j],0,3,CV_AA,0,1);
 		    }
 		}
-/*
-        mat_array.copyTo(mat_total(Rect(0, 0, WIDTH, HEIGHT)));
-        resize(mat_arrow_h,mat_arrow_h,Size(WIDTH_H, HEIGHT_H));
-        resize(mat_arrow_v,mat_arrow_v,Size(WIDTH_V, HEIGHT_V));
-        mat_arrow_h.copyTo(mat_total(Rect(0, HEIGHT, WIDTH_H, HEIGHT_H)));
-        mat_arrow_v.copyTo(mat_total(Rect(WIDTH, 0, WIDTH_V, HEIGHT_V)));
-*/
+
 		namedWindow("Img_Array",WINDOW_NORMAL);
 		imshow("Img_Array",mat_array);
 		namedWindow("Optical_flow_h",WINDOW_NORMAL);
 		imshow("Optical_flow_h",mat_arrow_h);
+        namedWindow("Optical_flow_h_comp",WINDOW_NORMAL);
+		imshow("Optical_flow_h_comp",mat_arrow_h_comp);
 		namedWindow("Optical_flow_v",WINDOW_NORMAL);
 		imshow("Optical_flow_v",mat_arrow_v);
-        //namedWindow("Img_Total",WINDOW_NORMAL);
-        //imshow("Img_Total",mat_total);
 
 		// --------------- //
         // -- Data Save -- //
 		// --------------- //
 
-        //// Pose Data save
+        //// Pose Data Save
 		file_pose_data << count << ", " << pose_p_x_t << ", " << pose_p_y_t << ", " << pose_p_z_t << ", " << pose_o_ex_t << ", " << pose_o_ey_t << ", " << pose_o_ey_t << ", ";
 		file_pose_data << pose_p_x_c << ", " << pose_p_y_c << ", " << pose_p_z_c << ", " << pose_o_ex_c << ", " << pose_o_ey_c<< ", " << pose_o_ez_c << endl;
+
+        //// Velocity Data Save
+        file_vel_data << count << ", " << odom_lx << ", " << odom_ly << ", " << odom_lz << ", " << odom_ax << ", " << odom_ay << ", " << odom_az << endl;
+
+        //// Control Data Save
+        file_control_data << count << ", " << c_in_oz1 << ", " << c_in_oz2 << endl;
 
         //// Horizental Optical Flow Data Save
 		file_of_h_data << count << ", " << OFright << ", " << OFleft << ", " << of_rl_e << ", " << of_rl_e_f << ", ";
@@ -675,7 +791,10 @@ int main (int argc, char **argv){
 		ROS_INFO("P_Y = %f", pose_p_y_c);
 		ROS_INFO("P_Z = %f", pose_p_z_c);
         ROS_INFO("O_Z = %f", pose_o_ez_c);
+        ROS_INFO("V_O_Z = %f", odom_az);
 		ROS_INFO("-------------------------------");
+        //ROS_INFO("OF_h = %f", OFright - OFleft);
+        //ROS_INFO("OF_h_comp = %f", OFright_comp - OFleft_comp);
 		ROS_INFO("OF_RL_E_F = %f", of_rl_e_f);
 		ROS_INFO("OF_RL_CTRL = %f", of_rl_ctrl_input);
 		ROS_INFO("-------------------------------");
@@ -695,10 +814,12 @@ int main (int argc, char **argv){
 	}
 
 	file_pose_data.close();
+    file_vel_data.close();
 	file_of_h_data.close();
 	file_of_v_data.close();
 	file_eta_h_data.close();
 	file_image_data.close();
+    file_control_data.close();
 
 	return 0;
 }

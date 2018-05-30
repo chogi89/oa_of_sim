@@ -1,5 +1,5 @@
 #include "ros/ros.h"
-#include "oa_of/MsgOAOF.h"
+#include "oa_of_sim/MsgOAOF.h"
 
 #include <cv_bridge/cv_bridge.h>
 #include <image_transport/image_transport.h>
@@ -41,30 +41,30 @@
 #define D_SET       0.1
 
 #define INIT_P_X    0
-#define INIT_P_Y    0
+#define INIT_P_Y    4.0616
 #define INIT_P_Z    1.5
 
-#define SET_P_X     20
-#define SET_P_Y     0
+#define SET_P_X     25
+#define SET_P_Y     -3.2035
 #define SET_P_Z     1.5
 
 #define RL_P_GAIN   0.01
 #define RL_D_GAIN   0.01
-#define ETA_P_GAIN  1.7
+#define ETA_P_GAIN  0.8
 #define ETA_D_GAIN  0
 #define UD_P_GAIN   0.01
 #define UD_D_GAIN   0.01
 #define EPS_P_GAIN  1000
-#define S_OZ_P_GAIN 3
+#define S_OZ_P_GAIN 1.5
 #define S_OZ_D_GAIN 0
-#define S_OZ_SAT    0.07
+#define S_OZ_SAT    0.1
 #define S_PZ_P_GAIN 3
 #define S_PZ_D_GAIN 0
 #define S_PZ_SAT    0.07
 
 #define SIGMA_C_ETA 3
 #define SIGMA_C_RL  3
-#define SIGMA_C_WP  2
+#define SIGMA_C_WP  1
 
 #define SIGMA_M_ETA 20
 #define SIGMA_M_RL  20
@@ -208,7 +208,7 @@ int main (int argc, char **argv){
     ros::init(argc, argv, "oa_of_sim");
     ros::NodeHandle nh, nh_mavros, nh_image;
 
-    ros::Publisher oa_of_pub = nh.advertise<oa_of::MsgOAOF>("oa_of_msg",100);
+    ros::Publisher oa_of_pub = nh.advertise<oa_of_sim::MsgOAOF>("oa_of_msg",100);
 
     ros::Publisher Set_Position_pub = nh_mavros.advertise<geometry_msgs::PoseStamped>("firefly/command/pose",100);
     ros::Subscriber oa_of_sub_pos = nh_mavros.subscribe("firefly/odometry_sensor1/pose", 10, msgCallback);
@@ -481,12 +481,12 @@ int main (int argc, char **argv){
 
         for (int i=0; i<((WIDTH_H/2)-2); i++){
             for(int j=0; j<(HEIGHT_H-2); j++){
-                OFleft = OFleft + sqrt((u_h[i][j]*u_h[i][j]) + (v_h[i][j]*v_h[i][j]));
+                OFleft = OFleft + sqrt(u_h[i][j]*u_h[i][j]);
             }
         }
         for (int i=((WIDTH_H/2)); i<(WIDTH_H-2); i++){
             for(int j=0; j<(HEIGHT_H-2); j++){
-                OFright = OFright + sqrt((u_h[i][j]*u_h[i][j]) + (v_h[i][j]*v_h[i][j]));
+                OFright = OFright + sqrt(u_h[i][j]*u_h[i][j]);
             }
         }
 
@@ -499,10 +499,10 @@ int main (int argc, char **argv){
 
         for(int i=0; i<(WIDTH_V-2); i++){
             for(int j=0; j<((HEIGHT_V/2)-2); j++){
-                OFup = OFup + sqrt((u_v[i][j]*u_v[i][j]) + (v_v[i][j]*v_v[i][j]));
+                OFup = OFup + sqrt(v_v[i][j]*v_v[i][j]);
             }
             for(int j=(HEIGHT_V/2); j<(HEIGHT_V-2); j++){
-                OFdown = OFdown + sqrt((u_v[i][j]*u_v[i][j]) + (v_v[i][j]*v_v[i][j]));
+                OFdown = OFdown + sqrt(v_v[i][j]*v_v[i][j]);
             }
         }
 
@@ -688,7 +688,7 @@ int main (int argc, char **argv){
 		if(keypressed == 27)
 			break;
 
-        oa_of::MsgOAOF msg;
+        oa_of_sim::MsgOAOF msg;
         geometry_msgs::PoseStamped msg_setposition;
 
 		msg.data = count;
